@@ -205,3 +205,76 @@ mod tests {
         assert_eq!(env.events().all().len(), 1);
     }
 }
+
+#[cfg(test)]
+mod accrual_tests {
+    use super::*;
+    use crate::SLACalculatorContract;
+    use soroban_sdk::testutils::Address as _;
+
+    const WINDOW: u64 = 2_592_000;
+
+    #[test]
+    fn test_bonus_accrues_over_consecutive_clean_windows() {
+        let env = Env::default();
+        let id = env.register_contract(None, SLACalculatorContract);
+        let operator = Address::generate(&env);
+        env.as_contract(&id, || {
+            let mut budget = 10_000i128;
+            let mut total = 0i128;
+            for _ in 0..3 {
+                let award = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, budget, 10_000).unwrap();
+                assert!(award.is_payout());
+                budget -= award.credit;
+                total += award.credit;
+            }
+            assert_eq!(total, 3_000);
+            assert_eq!(budget, 7_000);
+        });
+    }
+
+    #[test]
+    fn test_a_window_with_downtime_earns_nothing_and_does_not_reset_earlier_accrual() {
+        let env = Env::default();
+        let id = env.register_contract(None, SLACalculatorContract);
+        let operator = Address::generate(&env);
+        env.as_contract(&id, || {
+            let first = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 10_000, 10_000).unwrap();
+            let broken = evaluate_bonus(&env, &operator, 30, WINDOW, 1_000, 10_000, 10_000);
+            assert_eq!(broken, Err(BonusRejection::IncompleteWindow));
+            let third = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 10_000, 10_000).unwrap();
+            assert_eq!(first.credit + third.credit, 2_000);
+        });
+    }
+
+    #[test]
+    fn test_accrual_is_capped_by_the_remaining_budget() {
+        let env = Env::default();
+        let id = env.register_contract(None, SLACalculatorContract);
+        let operator = Address::generate(&env);
+        env.as_contract(&id, || {
+            let a = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 1_500, 10_000).unwrap();
+            let b = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 1_500 - a.credit, 10_000).unwrap();
+            assert_eq!(a.credit, 1_000);
+            assert_eq!(b.credit, 500);
+            let c = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 0, 10_000);
+            assert_eq!(c, Err(BonusRejection::BonusBudgetDepleted));
+        });
+    }
+
+    #[test]
+    fn test_multiplier_scales_and_clamps_the_accrued_credit() {
+        let env = Env::default();
+        let id = env.register_contract(None, SLACalculatorContract);
+        let operator = Address::generate(&env);
+        env.as_contract(&id, || {
+            let half = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 10_000, 5_000).unwrap();
+            let double = evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 10_000, 20_000).unwrap();
+            assert_eq!((half.credit, double.credit), (500, 2_000));
+            assert_eq!(
+                evaluate_bonus(&env, &operator, 0, WINDOW, 1_000, 10_000, 20_001),
+                Err(BonusRejection::InvalidMultiplier)
+            );
+        });
+    }
+}

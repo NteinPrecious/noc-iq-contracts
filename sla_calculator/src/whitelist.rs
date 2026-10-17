@@ -760,3 +760,89 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod idempotency_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    fn setup() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, crate::SLACalculatorContract);
+        let admin = Address::generate(&env);
+        env.as_contract(&id, || {
+            env.storage().instance().set(&ADMIN_KEY, &admin);
+            init_whitelist(&env);
+        });
+        (env, id, admin)
+    }
+
+    #[test]
+    fn test_adding_the_same_address_twice_counts_once() {
+        let (env, id, admin) = setup();
+        let target = Address::generate(&env);
+        env.as_contract(&id, || {
+            add_to_whitelist(&env, &admin, &target).unwrap();
+            add_to_whitelist(&env, &admin, &target).unwrap();
+            assert_eq!(get_whitelist_status(&env).unwrap().1, 1);
+            assert_eq!(is_whitelisted(&env, &target), Ok(true));
+        });
+    }
+
+    #[test]
+    fn test_removing_an_address_twice_does_not_underflow_the_count() {
+        let (env, id, admin) = setup();
+        let target = Address::generate(&env);
+        let other = Address::generate(&env);
+        env.as_contract(&id, || {
+            add_to_whitelist(&env, &admin, &target).unwrap();
+            add_to_whitelist(&env, &admin, &other).unwrap();
+            remove_from_whitelist(&env, &admin, &target).unwrap();
+            remove_from_whitelist(&env, &admin, &target).unwrap();
+            assert_eq!(get_whitelist_status(&env).unwrap().1, 1);
+            assert_eq!(is_whitelisted(&env, &target), Ok(false));
+            assert_eq!(is_whitelisted(&env, &other), Ok(true));
+        });
+    }
+
+    #[test]
+    fn test_removing_an_address_that_was_never_added_is_a_no_op() {
+        let (env, id, admin) = setup();
+        let stranger = Address::generate(&env);
+        env.as_contract(&id, || {
+            remove_from_whitelist(&env, &admin, &stranger).unwrap();
+            assert_eq!(get_whitelist_status(&env).unwrap().1, 0);
+        });
+    }
+
+    #[test]
+    fn test_add_remove_add_round_trip_restores_membership() {
+        let (env, id, admin) = setup();
+        let target = Address::generate(&env);
+        env.as_contract(&id, || {
+            add_to_whitelist(&env, &admin, &target).unwrap();
+            remove_from_whitelist(&env, &admin, &target).unwrap();
+            add_to_whitelist(&env, &admin, &target).unwrap();
+            assert_eq!(is_whitelisted(&env, &target), Ok(true));
+            assert_eq!(get_whitelist_status(&env).unwrap().1, 1);
+        });
+    }
+
+    #[test]
+    fn test_non_admin_cannot_change_the_whitelist() {
+        let (env, id, _admin) = setup();
+        let intruder = Address::generate(&env);
+        let target = Address::generate(&env);
+        env.as_contract(&id, || {
+            assert_eq!(
+                add_to_whitelist(&env, &intruder, &target),
+                Err(SLAError::Unauthorized)
+            );
+            assert_eq!(
+                remove_from_whitelist(&env, &intruder, &target),
+                Err(SLAError::Unauthorized)
+            );
+        });
+    }
+}

@@ -36,6 +36,7 @@ pub mod storage_helpers;
 pub mod threshold_config;
 pub mod trend;
 pub mod version_negotiation;
+pub mod version_discovery;
 pub mod whitelist;
 pub mod zero_downtime_bonus;
 // -----------------------------------------------------------------------

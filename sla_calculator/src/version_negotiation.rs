@@ -351,3 +351,74 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use soroban_sdk::Env;
+
+    fn info(_env: &Env, protocol: u32, min_compat: u32) -> VersionNegotiationInfo {
+        VersionNegotiationInfo {
+            contract_name: symbol_short!("peer"),
+            protocol_version: protocol,
+            storage_version: 1,
+            min_compatible_protocol: min_compat,
+            is_paused: false,
+            needs_migration: false,
+        }
+    }
+
+    fn ours(_env: &Env) -> VersionNegotiationInfo {
+        build_negotiation_info(1, 1, false)
+    }
+
+    #[test]
+    fn test_peer_below_our_minimum_is_unsupported() {
+        let env = Env::default();
+        let mut peers = Vec::new(&env);
+        peers.push_back(info(&env, 0, 0));
+        let result = negotiate_contract_versions(&env, &ours(&env), &peers);
+        assert_eq!(result.outcome, NegotiationOutcome::Incompatible);
+        assert_eq!(result.summary, symbol_short!("incompt"));
+        assert_eq!(result.mismatches.len(), 1);
+        assert_eq!(result.mismatches.get(0).unwrap().required_min, MIN_COMPATIBLE_PROTOCOL);
+    }
+
+    #[test]
+    fn test_peer_requiring_a_newer_protocol_than_ours_is_unsupported() {
+        let env = Env::default();
+        let mut peers = Vec::new(&env);
+        peers.push_back(info(&env, 5, 5));
+        let result = negotiate_contract_versions(&env, &ours(&env), &peers);
+        assert_eq!(result.outcome, NegotiationOutcome::Incompatible);
+        assert_eq!(result.mismatches.get(0).unwrap().reported_protocol, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_newer_but_backward_compatible_peer_negotiates_instead_of_failing() {
+        let env = Env::default();
+        let mut peers = Vec::new(&env);
+        peers.push_back(info(&env, 2, 1));
+        let result = negotiate_contract_versions(&env, &ours(&env), &peers);
+        assert_eq!(result.outcome, NegotiationOutcome::Negotiated);
+        assert_eq!(result.mismatches.len(), 0);
+    }
+
+    #[test]
+    fn test_one_unsupported_peer_blocks_an_otherwise_compatible_group() {
+        let env = Env::default();
+        let mut peers = Vec::new(&env);
+        peers.push_back(info(&env, 1, 1));
+        peers.push_back(info(&env, 0, 0));
+        let result = negotiate_contract_versions(&env, &ours(&env), &peers);
+        assert_eq!(result.outcome, NegotiationOutcome::Incompatible);
+    }
+
+    #[test]
+    fn test_no_peers_is_trivially_compatible() {
+        let env = Env::default();
+        let peers: Vec<VersionNegotiationInfo> = Vec::new(&env);
+        let result = negotiate_contract_versions(&env, &ours(&env), &peers);
+        assert_eq!(result.outcome, NegotiationOutcome::Compatible);
+    }
+}
